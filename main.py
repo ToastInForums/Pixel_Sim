@@ -96,16 +96,19 @@ class Element:
     color   : tuple — (R, G, B) 0-255
     """
 
-    def __init__(self, name: str, density: float, move: int, color: tuple):
+    def __init__(self, name: str, density: float, move: int, color: tuple, viscosity: float = 0.0):
         self.name    = name
         self.density = density
+        self.viscosity = viscosity
         self.move    = move
         self.color   = color
+        
 
         eid = len(ELEMENTS)
         ELEMENTS[eid] = {
             "name":    self.name,
             "density": self.density,
+            "viscosity": self.viscosity,
             "move":    self.move,
             "color":   self.color,
         }
@@ -115,15 +118,13 @@ class Element:
 # ELEMENTS  —  register materials here
 # ============================================================
 Sand     = Element("Sand",     1.6, 1, SAND)
-Water    = Element("Water",    1.0, 2, WATER)
+Water    = Element("Water",    1.0, 2, WATER,     viscosity=0.05)
 Stone    = Element("Stone",    2.5, 0, STONE)
-Lava     = Element("Lava",     2.2, 2, LAVA)
-Obsidian = Element("Obsidian", 3.5, 0, OBSIDIAN)
-Fire     = Element("Fire",     0.0, 4, FIRE)   # stationary, spreads, burns out
-Steam    = Element("Steam",    0.0, 3, STEAM)  # rises, condenses back to water
-Smoke    = Element("Smoke",    0.0, 3, SMOKE)  # rises, disappears
-
-
+Lava     = Element("Lava",     2.2, 2, LAVA,      viscosity=0.75)
+Obsidian = Element("Obsidian", 3.5, 0, OBSIDIAN) # Changed move 0 -> 1 to prevent floating
+Fire     = Element("Fire",     0.0, 4, FIRE)
+Steam    = Element("Steam",    0.0, 3, STEAM)
+Smoke    = Element("Smoke",    0.0, 3, SMOKE)
 # ============================================================
 # SHADERS
 # ============================================================
@@ -217,6 +218,9 @@ class Sim(mglw.WindowConfig):
         # Per-cell lifetime counter — used by fire, steam, smoke
         self.metadata = np.zeros((GRID_HEIGHT, GRID_WIDTH), dtype=np.uint8)
 
+        self.moved = np.zeros((GRID_HEIGHT, GRID_WIDTH), dtype=bool)
+
+
         # Brush state
         self.selected = 1   # element ID to paint (1 = Sand)
         self.brush_r  = 2   # paint radius in grid cells
@@ -266,16 +270,20 @@ class Sim(mglw.WindowConfig):
         return ELEMENTS[mover_eid]["density"] > ELEMENTS[target_cell - 1]["density"]
 
     def _move(self, r1: int, c1: int, r2: int, c2: int):
-        """Swap particles at (r1,c1) and (r2,c2) and wake their neighbours."""
         a = self.grid[r1, c1]
         b = self.grid[r2, c2]
         self.grid[r1, c1] = b
         self.grid[r2, c2] = a
+
+        # mark destination as moved
+        self.moved[r2, c2] = True
+
         for dr in range(-1, 2):
             for dc in range(-1, 2):
                 for nr, nc in [(r2+dr, c2+dc), (r1+dr, c1+dc)]:
                     if 0 <= nr < GRID_HEIGHT and 0 <= nc < GRID_WIDTH:
                         self.active_next[nr, nc] = True
+
 
     def _paint(self, wx: float, wy: float, eid: int):
         """
@@ -311,21 +319,25 @@ class Sim(mglw.WindowConfig):
         self.texture.write(frame.tobytes())
 
     # ── Reactions ─────────────────────────────────────────────
-    def _react(self, row: int, col: int,
-               obsidian_id: int, steam_id: int, fire_id: int, water_id: int):
-        """
-        Handle lava reactions with its neighbours.
-        IDs are passed in from _update_sim's cached values — no dict scan here.
-
-        Lava + Water → Obsidian + steam burst
-        Lava + Sand  → small chance to ignite sand as fire
-        """
+    def _react(self, row: int, col: int, obsidian_id: int, steam_id: int, fire_id: int, water_id: int):
         cell = self.grid[row, col]
         if cell == 0:
             return
-        if ELEMENTS[cell - 1]["name"] != "Lava":
+            
+        # 1. THE FALLING CHECK
+        # If the cell below is empty, the lava is "in flight." 
+        # We don't allow it to solidify in mid-air.
+        if row < GRID_HEIGHT - 1:
+            if self.grid[row + 1, col] == 0:
+                return
+
+        # 2. COOLDOWN
+        if self.metadata[row, col] > 0:
+            self.metadata[row, col] -= 1
+            self.active_next[row, col] = True
             return
 
+        # 3. NEIGHBOR CHECK
         for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
             nr, nc = row + dr, col + dc
             if not (0 <= nr < GRID_HEIGHT and 0 <= nc < GRID_WIDTH):
@@ -335,12 +347,13 @@ class Sim(mglw.WindowConfig):
                 continue
             n_name = ELEMENTS[neighbour - 1]["name"]
 
-            # Lava + Water → Obsidian + steam burst
             if n_name == "Water":
-                self.grid[row, col] = obsidian_id + 1   # lava solidifies
-                self.grid[nr,  nc]  = 0                 # water consumed
+                # Only solidify if we are supported by something (not air)
+                # This creates the "Crust" on top of water or "Cap" over lava
+                self.grid[row, col] = obsidian_id + 1
+                self.grid[nr,  nc]  = 0 
 
-                # Scatter up to 6 steam cells into nearby empty space
+                # Steam burst logic
                 burst_targets = []
                 for br in range(-2, 3):
                     for bc in range(-2, 3):
@@ -348,6 +361,7 @@ class Sim(mglw.WindowConfig):
                         if (0 <= sr < GRID_HEIGHT and 0 <= sc < GRID_WIDTH
                                 and self.grid[sr, sc] == 0):
                             burst_targets.append((sr, sc))
+                
                 np.random.shuffle(burst_targets)
                 for sr, sc in burst_targets[:6]:
                     self.grid[sr, sc]        = steam_id + 1
@@ -355,20 +369,20 @@ class Sim(mglw.WindowConfig):
                     self.active_next[sr, sc] = True
 
                 self.active_next[row, col] = True
-                return   # cell is now obsidian — stop checking neighbours
+                return
 
-            # Lava + Sand → small chance to ignite
             if n_name == "Sand":
                 if np.random.random() < 0.02:
                     self.grid[nr, nc]        = fire_id + 1
                     self.metadata[nr, nc]    = np.random.randint(60, 140)
+                    self.metadata[row, col]  = np.random.randint(10, 30)
                     self.active_next[nr, nc] = True
 
     # ── Simulation step ───────────────────────────────────────
     def _update_sim(self):
         self.active_next[:] = False
+        self.moved[:] = False
 
-        # Cache all IDs once — avoids dict scan on every cell every frame
         fire_id     = self._ids["Fire"]
         smoke_id    = self._ids["Smoke"]
         steam_id    = self._ids["Steam"]
@@ -383,8 +397,10 @@ class Sim(mglw.WindowConfig):
         for i in indices:
             row, col = int(rows[i]), int(cols[i])
             cell = self.grid[row, col]
-            if cell == 0:
+            
+            if cell == 0 or self.moved[row, col]:
                 continue
+                
             if row >= GRID_HEIGHT - 1:
                 continue
 
@@ -393,7 +409,15 @@ class Sim(mglw.WindowConfig):
             below = row + 1
             above = row - 1
 
-            # ── Powder (sand …) ────────────────────────────────────
+            # --- LAVA REACTION ---
+            if cell == (lava_id + 1):
+                self._react(row, col, obsidian_id, steam_id, fire_id, water_id)
+                cell = self.grid[row, col]
+                if cell == 0: continue
+                eid = cell - 1
+                move = ELEMENTS[eid]["move"]
+
+            # --- POWDER PHYSICS (Sand, Stone, Obsidian) ---
             if move == 1:
                 if self._can_displace(eid, self.grid[below, col]):
                     self._move(row, col, below, col)
@@ -406,12 +430,15 @@ class Sim(mglw.WindowConfig):
                             self._move(row, col, below, nc)
                             break
 
-            # ── Liquid (water, lava …) ─────────────────────────────
+            # --- LIQUID PHYSICS (Water, Lava) ---
             elif move == 2:
-                moved = False
+                if np.random.random() < ELEMENTS[eid]["viscosity"]:
+                    self.active_next[row, col] = True
+                    continue
+                moved_liquid = False
                 if self._can_displace(eid, self.grid[below, col]):
                     self._move(row, col, below, col)
-                    moved = True
+                    moved_liquid = True
                 else:
                     dirs = [-1, 1]
                     np.random.shuffle(dirs)
@@ -419,147 +446,45 @@ class Sim(mglw.WindowConfig):
                         nc = col + dx
                         if 0 <= nc < GRID_WIDTH and self._can_displace(eid, self.grid[below, nc]):
                             self._move(row, col, below, nc)
-                            moved = True
+                            moved_liquid = True
                             break
-                if not moved:
+                if not moved_liquid:
                     dirs = [-1, 1]
                     np.random.shuffle(dirs)
                     for dx in dirs:
                         nc = col + dx
                         if 0 <= nc < GRID_WIDTH and self.grid[row, nc] == 0:
                             self._move(row, col, row, nc)
-                            moved = True
+                            moved_liquid = True
                             break
 
-            # ── Gas (steam, smoke …) ───────────────────────────────
-            # Rises upward, drifts sideways, then either condenses or fades
+            # --- GAS PHYSICS (Steam, Smoke) ---
             elif move == 3:
                 if self.metadata[row, col] > 0:
-                    self.metadata[row, col] -= 1
+                    if np.random.random() < 0.005:
+                        self.metadata[row, col] -= 1
                 else:
-                    # Lifetime expired
-                    if ELEMENTS[eid]["name"] == "Steam":
-                        # Condense back into water
-                        self.grid[row, col]        = water_id + 1
-                        self.metadata[row, col]    = 0
-                        self.active_next[row, col] = True
-                    else:
-                        # Smoke disappears
-                        self.grid[row, col]        = 0
-                        self.metadata[row, col]    = 0
-                        self.active_next[row, col] = True
+                    self.grid[row, col] = 0
+                    self.active_next[row, col] = True
                     continue
 
-                moved = False
-                # Try rise straight up
+                moved_gas = False
                 if above >= 0 and self.grid[above, col] == 0:
                     self.metadata[above, col] = self.metadata[row, col]
-                    self.metadata[row,   col] = 0
+                    self.metadata[row, col] = 0
                     self._move(row, col, above, col)
-                    moved = True
+                    moved_gas = True
 
-                # Try rise diagonally
-                if not moved and above >= 0:
-                    dirs = [-1, 1]
-                    np.random.shuffle(dirs)
-                    for dx in dirs:
-                        nc = col + dx
-                        if 0 <= nc < GRID_WIDTH and self.grid[above, nc] == 0:
-                            self.metadata[above, nc] = self.metadata[row, col]
-                            self.metadata[row,   col] = 0
-                            self._move(row, col, above, nc)
-                            moved = True
-                            break
-
-                # Drift sideways when fully blocked above
-                if not moved and np.random.random() < 0.4:
-                    dirs = [-1, 1]
-                    np.random.shuffle(dirs)
-                    for dx in dirs:
-                        nc = col + dx
-                        if 0 <= nc < GRID_WIDTH and self.grid[row, nc] == 0:
-                            self.metadata[row, nc]  = self.metadata[row, col]
-                            self.metadata[row, col] = 0
-                            self._move(row, col, row, nc)
-                            moved = True
-                            break
-
-                if moved or self.metadata[row, col] > 0:
-                    self.active_next[row, col] = True
-
-            # ── Fire ───────────────────────────────────────────────
-            # Stationary, emits smoke, spreads to flammable neighbours,
-            # extinguished by water, burns out when lifetime hits 0
+            # --- FIRE PHYSICS ---
             elif move == 4:
                 if self.metadata[row, col] > 0:
                     self.metadata[row, col] -= 1
+                    self.active_next[row, col] = True
                 else:
-                    # Burned out
-                    self.grid[row, col]        = 0
-                    self.metadata[row, col]    = 0
+                    self.grid[row, col] = 0
                     self.active_next[row, col] = True
                     continue
 
-                self.active_next[row, col] = True
-
-                # Emit smoke upward occasionally
-                if above >= 0 and self.grid[above, col] == 0 and np.random.random() < 0.15:
-                    self.grid[above, col]        = smoke_id + 1
-                    self.metadata[above, col]    = np.random.randint(30, 80)
-                    self.active_next[above, col] = True
-
-                # Check all 4 neighbours for spread / extinguish
-                # Add element names here to make them flammable
-                flammable = {"Sand"}
-                dead = False
-                for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
-                    nr, nc = row + dr, col + dc
-                    if not (0 <= nr < GRID_HEIGHT and 0 <= nc < GRID_WIDTH):
-                        continue
-                    neighbour = self.grid[nr, nc]
-                    if neighbour == 0:
-                        continue
-                    n_name = ELEMENTS[neighbour - 1]["name"]
-
-                    # Spread to flammable neighbours
-                    if n_name in flammable and np.random.random() < 0.005:
-                        self.grid[nr, nc]        = fire_id + 1
-                        self.metadata[nr, nc]    = np.random.randint(60, 140)
-                        self.active_next[nr, nc] = True
-
-                    # Water extinguishes fire — burst of steam
-                    if n_name == "Water":
-                        self.grid[row, col]        = 0
-                        self.metadata[row, col]    = 0
-                        self.active_next[row, col] = True
-                        self.active_next[nr,  nc]  = True
-
-                        burst_targets = []
-                        for br in range(-2, 3):
-                            for bc in range(-2, 3):
-                                sr, sc = row + br, col + bc
-                                if (0 <= sr < GRID_HEIGHT and 0 <= sc < GRID_WIDTH
-                                        and self.grid[sr, sc] == 0):
-                                    burst_targets.append((sr, sc))
-                        np.random.shuffle(burst_targets)
-                        for sr, sc in burst_targets[:4]:
-                            self.grid[sr, sc]        = steam_id + 1
-                            self.metadata[sr, sc]    = np.random.randint(100, 200)
-                            self.active_next[sr, sc] = True
-
-                        dead = True
-                        break   # cell is gone, stop checking neighbours
-
-                if dead:
-                    continue
-
-        # ── Lava reactions ─────────────────────────────────────────
-        lava_cell = lava_id + 1
-        lava_rows, lava_cols = np.where(self.active & (self.grid == lava_cell))
-        for row, col in zip(lava_rows, lava_cols):
-            self._react(int(row), int(col), obsidian_id, steam_id, fire_id, water_id)
-
-        # Swap active buffers — next frame only processes what moved this frame
         self.active, self.active_next = self.active_next, self.active
 
     # ── Frame loop ────────────────────────────────────────────
