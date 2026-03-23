@@ -1,25 +1,27 @@
 """
-Buoyancy & Layering (The Obsidian Fix): * Right now, Obsidian sinks because its density (3.5) is higher than Lava (2.2).
+The "To-Do" List for your Sim
 
-    To create a "crust" layer, we must check if a cell is "supported." If Obsidian is touching Lava or Water, we can give it a "Surface Tension" flag or simply lower its density dynamically so it floats on the interface.
+    Buoyancy & Layering (The Obsidian Fix): * Right now, Obsidian sinks because its density (3.5) is higher than Lava (2.2).
 
-Gas Diffusion & Stretching:
+        To create a "crust" layer, we must check if a cell is "supported." If Obsidian is touching Lava or Water, we can give it a "Surface Tension" flag or simply lower its density dynamically so it floats on the interface.
 
-    Gases currently "stack" at the top because they only check for empty cells.
+    Gas Diffusion & Stretching:
 
-    To make them "stretch," we need to implement Horizontal Displacement. If a gas particle is at the top (row 0), it should aggressively move left or right if there is space, simulating gas expanding to fill its container.
+        Gases currently "stack" at the top because they only check for empty cells.
 
-The Pressure System:
+        To make them "stretch," we need to implement Horizontal Displacement. If a gas particle is at the top (row 0), it should aggressively move left or right if there is space, simulating gas expanding to fill its container.
 
-    We add a pressure array. Liquids in a vertical column increase the pressure of the cells below them.
+    The Pressure System:
 
-    If a liquid cell has high pressure and an empty neighbor, it "squirts" into that neighbor, even if it has to move upward or sideways (Equalization).
+        We add a pressure array. Liquids in a vertical column increase the pressure of the cells below them.
 
-Temperature (Heat Transfer):
+        If a liquid cell has high pressure and an empty neighbor, it "squirts" into that neighbor, even if it has to move upward or sideways (Equalization).
 
-    We add a temp array. Lava has high heat; Water is a heat sink.
+    Temperature (Heat Transfer):
 
-    Heat should "diffuse" to neighbors. When a Water cell's temp exceeds a threshold, it turns into Steam. When Lava's temp drops, it turns into Obsidian.
+        We add a temp array. Lava has high heat; Water is a heat sink.
+
+        Heat should "diffuse" to neighbors. When a Water cell's temp exceeds a threshold, it turns into Steam. When Lava's temp drops, it turns into Obsidian.
 """
 
 import moderngl
