@@ -264,7 +264,7 @@ def simulate_step(grid, active, active_next,
                   dirty, dirty_next,
                   density_lut, move_lut, viscosity_lut,
                   steam_id, water_id, lava_id, obs_id,
-                  oil_id, fire_id, 
+                  oil_id, fire_id, smoke_id, 
                   idx_buf):
 
     H,  W  = grid.shape
@@ -525,6 +525,100 @@ def simulate_step(grid, active, active_next,
             if not moved_gas:
                 _keep_active(active_next, dirty_next, r, c, H, W, CH, CW)
 
+        # ---- FIRE  (move == 4) ----
+        elif move == 4:
+            life = metadata[r, c]
+
+            # 1. Water check - extinguish first
+            extinguished = False
+            for di in range(4):
+                if   di == 0: nr, nc = r - 1, c
+                elif di == 1: nr, nc = r + 1, c
+                elif di == 2: nr, nc = r,     c - 1
+                else:         nr, nc = r,     c + 1
+                if not (0 <= nr < H and 0 <= nc < W): continue
+                if grid[nr, nc] == water_id:
+                    grid[r, c]       = 0
+                    grid[nr, nc]     = steam_id
+                    metadata[nr, nc] = 200 + np.random.randint(0, 55)
+                    _activate(active_next, r, c, H, W)
+                    _mark_chunk(dirty_next, r, c, CH, CW)
+                    _mark_chunk(dirty_next, nr, nc, CH, CW)
+                    extinguished = True
+                    break
+            if extinguished:
+                continue
+
+            # 2. Lifetime decay — always decrement, fire burns fast
+            life -= 1
+            if life <= 0:
+                # Dying fire becomes smoke
+                grid[r, c]    = smoke_id
+                metadata[r,c] = 40 + np.random.randint(0, 40)
+                _activate(active_next, r, c, H, W)
+                _mark_chunk(dirty_next, r, c, CH, CW)
+                continue
+            metadata[r, c] = life
+
+            # 3. Spread to flammable neighbours BEFORE moving
+            for di in range(4):
+                if   di == 0: nr, nc = r - 1, c
+                elif di == 1: nr, nc = r,     c - 1
+                elif di == 2: nr, nc = r,     c + 1
+                else:         nr, nc = r + 1, c
+                if not (0 <= nr < H and 0 <= nc < W): continue
+                if grid[nr, nc] == oil_id and np.random.random() < 0.15:
+                    grid[nr, nc]     = fire_id
+                    metadata[nr, nc] = 80 + np.random.randint(0, 80)
+                    _activate(active_next, nr, nc, H, W)
+                    _mark_chunk(dirty_next, nr, nc, CH, CW)
+
+            # 4. Movement — fire rises upward like a flame
+            above = r - 1
+            moved_fire = False
+
+            # Try straight up
+            if above >= 0 and grid[above, c] == 0:
+                _swap(grid, moved, active_next, dirty_next,
+                      r, c, above, c, H, W, CH, CW)
+                moved_fire = True
+
+            # Try diagonal up (gives the flickering sideways lean)
+            if not moved_fire and above >= 0:
+                if np.random.randint(0, 2) != 0:
+                    dx1, dx2 = -1, 1
+                else:
+                    dx1, dx2 =  1, -1
+                nc1 = c + dx1
+                if 0 <= nc1 < W and grid[above, nc1] == 0:
+                    _swap(grid, moved, active_next, dirty_next,
+                          r, c, above, nc1, H, W, CH, CW)
+                    moved_fire = True
+                else:
+                    nc2 = c + dx2
+                    if 0 <= nc2 < W and grid[above, nc2] == 0:
+                        _swap(grid, moved, active_next, dirty_next,
+                              r, c, above, nc2, H, W, CH, CW)
+                        moved_fire = True
+
+            # Blocked from rising — spread sideways on the ground
+            if not moved_fire:
+                if np.random.randint(0, 2) != 0:
+                    dx1, dx2 = -1, 1
+                else:
+                    dx1, dx2 =  1, -1
+                nc1 = c + dx1
+                if 0 <= nc1 < W and grid[r, nc1] == 0:
+                    _swap(grid, moved, active_next, dirty_next,
+                          r, c, r, nc1, H, W, CH, CW)
+                    moved_fire = True
+                elif 0 <= c + dx2 < W and grid[r, c + dx2] == 0:
+                    _swap(grid, moved, active_next, dirty_next,
+                          r, c, r, c + dx2, H, W, CH, CW)
+                    moved_fire = True
+
+            if not moved_fire:
+                _keep_active(active_next, dirty_next, r, c, H, W, CH, CW)
     return n
 
 
@@ -538,6 +632,9 @@ class Sim(mglw.WindowConfig):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+
+        self.sim_speed   = 1/30   # run sim at 30 ticks/sec — lower = slower
+        self._sim_accum  = 0.0    # existing lines below this unchanged
 
         self.grid        = np.zeros((GRID_HEIGHT, GRID_WIDTH), dtype=np.uint8)
         self.active      = np.ones ((GRID_HEIGHT, GRID_WIDTH), dtype=bool)
@@ -574,6 +671,7 @@ class Sim(mglw.WindowConfig):
         self._obs_id   = ids["Obsidian"]
         self.oil_id    = ids["Oil"]
         self.fire_id   = ids["Fire"]
+        self.smoke_id  = ids["Smoke"]
 
         self._row_top_boost = np.clip(
             1.0 - np.arange(GRID_HEIGHT, dtype=np.float32)[:, None] / 22.0,
@@ -599,7 +697,7 @@ class Sim(mglw.WindowConfig):
             self.dirty, self.dirty_next,
             self.density_lut, self.move_lut, self.viscosity_lut,
             self._steam_id, self._water_id, self._lava_id, self._obs_id,
-            self.oil_id, self.fire_id,
+            self.oil_id, self.fire_id, self.smoke_id,
             self._idx_buf,
         )
         self.active,  self.active_next = self.active_next, self.active
@@ -638,6 +736,18 @@ class Sim(mglw.WindowConfig):
 
     def _build_frame_rgb(self):
         frame      = self.color_lut[self.grid].copy()
+
+        fire_mask = (self.grid == self.fire_id)
+        if np.any(fire_mask):
+            life_f = self.metadata.astype(np.float32) / 160.0 # normalise to 0-1
+            life_f = np.clip(life_f, 0.0, 1.0)
+            rows, cols = np.nonzero(fire_mask)
+            t = life_f[rows, cols]
+            # High life = hot white-yellow core, low life = dim red ember
+            frame[rows, cols, 0] = np.clip(200 + 55 * t, 0, 255).astype(np.uint8)
+            frame[rows, cols, 1] = np.clip(30 + 130 * t, 0, 255).astype(np.uint8)
+            frame[rows, cols, 2] = np.clip( 50 * t * t, 0, 255).astype(np.uint8)
+
         steam_mask = (self.grid == self._steam_id)
         if not np.any(steam_mask):
             return frame
@@ -664,9 +774,11 @@ class Sim(mglw.WindowConfig):
         return frame
 
     def on_render(self, time, frame_time):
+        self._sim_accum += frame_time
         n_active = 0
-        for _ in range(self.sim_steps):
+        while self._sim_accum >= self.sim_speed:
             n_active = self._run_sim_step()
+            self._sim_accum -= self.sim_speed
 
         fps = 1.0 / max(frame_time, 1e-6)
         self.wnd.title = (
@@ -674,7 +786,6 @@ class Sim(mglw.WindowConfig):
             f"{n_active:,} active cells  |  "
             f"1–8 select  R reset"
         )
-
         self.texture.write(self._build_frame_rgb().tobytes())
         self.ctx.clear()
         self.vao.render(moderngl.TRIANGLE_STRIP)
@@ -702,6 +813,10 @@ class Sim(mglw.WindowConfig):
                 self.metadata[:] = 0
                 self.active[:]   = True
                 self.dirty[:]    = True
+            if key == keys.UP:
+                self.sim_speed = max(1/120, self.sim_speed / 1.5)  # faster
+            if key == keys.DOWN:
+                self.sim_speed = min(1.0, self.sim_speed * 1.5)    # slower
 
 
 if __name__ == "__main__":
