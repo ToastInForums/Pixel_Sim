@@ -41,6 +41,7 @@ LAVA     = (207,  70,  20)
 OBSIDIAN = ( 30,  20,  45)
 STEAM    = (180, 200, 220)
 SMOKE    = ( 60,  60,  70)
+OIL      = (180, 140, 60)
 
 ELEMENTS: dict = {}
 
@@ -63,6 +64,7 @@ Obsidian = Element("Obsidian", 3.5, 1, OBSIDIAN)
 Fire     = Element("Fire",     0.0, 4, FIRE)
 Steam    = Element("Steam",    0.0, 3, STEAM)
 Smoke    = Element("Smoke",    0.0, 3, SMOKE)
+Oil      = Element("Oil",      0.85, 2, OIL,     viscosity=0.02)
 
 VERT = """
 #version 430
@@ -234,6 +236,24 @@ def _obsidian_supported(grid, metadata, r, c, H, W, move_lut):
             return True
     return False
 
+@nb.njit(cache=True, fastmath=True)
+def _react_oil_fire(grid, metadata, active_next, dirty_next, 
+                    r, c, oil_id, fire_id, H, W, CH, CW):
+    #Oil touching fire ignites: oil cell becomes fire
+    for di in range(4):
+        if di == 0: nr, nc = r - 1, c
+        elif di == 1: nr, nc = r + 1, c
+        elif di == 2: nr, nc = r, c - 1
+        else: nr, nc = r, c + 1
+
+        if not (0 <= nr < H and 0 <= nc < W): continue
+        if grid[nr, nc] != fire_id: continue
+
+        grid[r, c] = fire_id
+        metadata[r, c] = 80 + np.random.randint(0, 80)
+        active_next[r, c] = True
+        _mark_chunk(dirty_next, r, c, CH, CW)
+        return
 
 # ============================================================
 # MAIN SIMULATION KERNEL
@@ -244,6 +264,7 @@ def simulate_step(grid, active, active_next,
                   dirty, dirty_next,
                   density_lut, move_lut, viscosity_lut,
                   steam_id, water_id, lava_id, obs_id,
+                  oil_id, fire_id, 
                   idx_buf):
 
     H,  W  = grid.shape
@@ -300,6 +321,13 @@ def simulate_step(grid, active, active_next,
             _react(grid, metadata, active_next, dirty_next,
                    r, c, obs_id, steam_id, water_id, H, W, CH, CW)
             cell = grid[r, c]
+            if cell == 0:
+                continue
+        
+        if cell == oil_id:
+            _react_oil_fire(grid, metadata, active_next, dirty_next, 
+            r, c, oil_id, fire_id, H, W, CH, CW)
+            cell = grid[r, c] # may have changed to fire
             if cell == 0:
                 continue
 
@@ -544,6 +572,8 @@ class Sim(mglw.WindowConfig):
         self._water_id = ids["Water"]
         self._lava_id  = ids["Lava"]
         self._obs_id   = ids["Obsidian"]
+        self.oil_id    = ids["Oil"]
+        self.fire_id   = ids["Fire"]
 
         self._row_top_boost = np.clip(
             1.0 - np.arange(GRID_HEIGHT, dtype=np.float32)[:, None] / 22.0,
@@ -569,6 +599,7 @@ class Sim(mglw.WindowConfig):
             self.dirty, self.dirty_next,
             self.density_lut, self.move_lut, self.viscosity_lut,
             self._steam_id, self._water_id, self._lava_id, self._obs_id,
+            self.oil_id, self.fire_id,
             self._idx_buf,
         )
         self.active,  self.active_next = self.active_next, self.active
@@ -658,10 +689,11 @@ class Sim(mglw.WindowConfig):
         if action == self.wnd.keys.ACTION_PRESS:
             keys    = self.wnd.keys
             mapping = {
-                keys.NUMBER_1: 1, keys.NUMBER_2: 2,
-                keys.NUMBER_3: 3, keys.NUMBER_4: 4,
-                keys.NUMBER_5: 5, keys.NUMBER_6: 6,
-                keys.NUMBER_7: 7, keys.NUMBER_8: 8,
+                keys.NUMBER_1: 1, keys.NUMBER_2: 2, #Sand, Water
+                keys.NUMBER_3: 3, keys.NUMBER_4: 4, #Stone, Lava
+                keys.NUMBER_5: 5, keys.NUMBER_6: 6, #Idk and Idk
+                keys.NUMBER_7: 7, keys.NUMBER_8: 8, #Idk and Idk
+                keys.NUMBER_9: 9, #Oil
             }
             if key in mapping:
                 self.selected = mapping[key]
