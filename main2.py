@@ -249,8 +249,8 @@ def _react_oil_fire(grid, metadata, active_next, dirty_next,
         if not (0 <= nr < H and 0 <= nc < W): continue
         if grid[nr, nc] != fire_id: continue
 
-        grid[r, c] = fire_id
-        metadata[r, c] = 80 + np.random.randint(0, 80)
+        if metadata[r, c] == 0:   # only ignite once
+            metadata[r, c] = 220 + np.random.randint(0, 35)
         active_next[r, c] = True
         _mark_chunk(dirty_next, r, c, CH, CW)
         return
@@ -330,6 +330,46 @@ def simulate_step(grid, active, active_next,
             cell = grid[r, c] # may have changed to fire
             if cell == 0:
                 continue
+
+        # Burning oil — stays in place, produces flames above, slowly consumed
+        if cell == oil_id and metadata[r, c] > 0:
+            life = metadata[r, c]
+
+            # Slow burn — oil is dense fuel, takes a long time to consume
+            if np.random.random() < 0.008:   # very slow decay
+                life -= 1
+            if life <= 0:
+                grid[r, c]    = smoke_id
+                metadata[r,c] = 60 + np.random.randint(0, 40)
+                _mark_chunk(dirty_next, r, c, CH, CW)
+                _activate(active_next, r, c, H, W)
+                continue
+            metadata[r, c] = life
+
+            # Spawn a fire cell above — this is the visible flame
+            above = r - 1
+            if above >= 0 and grid[above, c] == 0:
+                if np.random.random() < 0.35:
+                    grid[above, c]     = fire_id
+                    metadata[above, c] = 60 + np.random.randint(0, 40)
+                    _activate(active_next, above, c, H, W)
+                    _mark_chunk(dirty_next, above, c, CH, CW)
+
+            # Spread burn to neighbouring oil cells
+            for di in range(4):
+                if   di == 0: nr, nc = r - 1, c
+                elif di == 1: nr, nc = r,     c - 1
+                elif di == 2: nr, nc = r,     c + 1
+                else:         nr, nc = r + 1, c
+                if not (0 <= nr < H and 0 <= nc < W): continue
+                if grid[nr, nc] == oil_id and metadata[nr, nc] == 0:
+                    if np.random.random() < 0.02:   # slow creep across the pool
+                        metadata[nr, nc] = 220 + np.random.randint(0, 35)
+                        active_next[nr, nc] = True
+                        _mark_chunk(dirty_next, nr, nc, CH, CW)
+
+            _keep_active(active_next, dirty_next, r, c, H, W, CH, CW)
+            continue   # skip normal liquid movement while burning
 
         move = move_lut[cell]
 
@@ -436,7 +476,7 @@ def simulate_step(grid, active, active_next,
                 decay_p = 0.70
 
             if np.random.random() < decay_p:
-                life -= 1
+                    life -= 1
 
             if life <= 0:
                 grid[r, c] = 0
@@ -550,15 +590,16 @@ def simulate_step(grid, active, active_next,
                 continue
 
             # 2. Lifetime decay — always decrement, fire burns fast
-            life -= 1
-            if life <= 0:
-                # Dying fire becomes smoke
-                grid[r, c]    = smoke_id
-                metadata[r,c] = 40 + np.random.randint(0, 40)
-                _activate(active_next, r, c, H, W)
-                _mark_chunk(dirty_next, r, c, CH, CW)
-                continue
-            metadata[r, c] = life
+            if np.random.random() < 0.20:
+                life -= 1
+                if life <= 0:
+                    # Dying fire becomes smoke
+                    grid[r, c]    = smoke_id
+                    metadata[r,c] = 40 + np.random.randint(0, 40)
+                    _activate(active_next, r, c, H, W)
+                    _mark_chunk(dirty_next, r, c, CH, CW)
+                    continue
+                metadata[r, c] = life
 
             # 3. Spread to flammable neighbours BEFORE moving
             for di in range(4):
@@ -567,9 +608,9 @@ def simulate_step(grid, active, active_next,
                 elif di == 2: nr, nc = r,     c + 1
                 else:         nr, nc = r + 1, c
                 if not (0 <= nr < H and 0 <= nc < W): continue
-                if grid[nr, nc] == oil_id and np.random.random() < 0.15:
+                if grid[nr, nc] == oil_id and np.random.random() < 0.04:
                     grid[nr, nc]     = fire_id
-                    metadata[nr, nc] = 80 + np.random.randint(0, 80)
+                    metadata[nr, nc] = 200 + np.random.randint(0, 55)
                     _activate(active_next, nr, nc, H, W)
                     _mark_chunk(dirty_next, nr, nc, CH, CW)
 
@@ -633,7 +674,7 @@ class Sim(mglw.WindowConfig):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-        self.sim_speed   = 1/30   # run sim at 30 ticks/sec — lower = slower
+        self.sim_speed   = 1/120   # run sim at 30 ticks/sec — lower = slower
         self._sim_accum  = 0.0    # existing lines below this unchanged
 
         self.grid        = np.zeros((GRID_HEIGHT, GRID_WIDTH), dtype=np.uint8)
