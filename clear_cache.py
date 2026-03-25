@@ -10,8 +10,8 @@ Usage:
 """
 import pathlib, sys
 
-#cache_dir = pathlib.Path("D:\\VSCODE\\Personal\\Pixel_Sim\\Pixel_Sim\\__pycache__")
-cache_dir = pathlib.Path("C:\\Users\\JoelM\\OneDrive\\2026\\SOFT\\Bored\\Pixels\\Pixel_sim\\__pycache__")
+cache_dir = pathlib.Path("D:\\VSCODE\\Personal\\Pixel_Sim\\Pixel_Sim\\__pycache__")
+#cache_dir = pathlib.Path("C:\\Users\\JoelM\\OneDrive\\2026\\SOFT\\Bored\\Pixels\\Pixel_sim\\__pycache__")
 
 
 
